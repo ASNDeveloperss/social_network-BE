@@ -1,0 +1,80 @@
+cd ~/projects/microservices
+cat > .gitignore << 'EOF'
+## .NET ##
+*.swp
+*.*~
+project.lock.json
+.DS_Store
+*.pyc
+nupkg/
+
+# Visual Studio Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.csproj.user
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+build/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+
+# NuGet
+packages/
+*.nupkg
+.nuget/
+nuget.exe
+
+# Entity Framework migrations (optional - if you want to commit them)
+# !**/Migrations/*.cs
+
+# Secrets
+appsettings.Development.json
+appsettings.Production.json
+appsettings.Staging.json
+secrets.json
+*.env
+.env.local
+
+# User-specific files
+Properties/launchSettings.json
+
+# ReSharper
+_ReSharper*/
+*.resharper
+
+# Rider
+.idea/
+
+# Azure
+*.azurePubxml
+
+# Local history for Visual Studio
+.history/
+
+# BeatPulse healthcheck temp database
+healthchecksdb
+
+# Backup folder for Package Reference Convert tool in Visual Studio 2017
+MigrationBackup/
+
+# Ionide (cross platform F# VS Code tools) working folder
+.ionide/
+EOF
