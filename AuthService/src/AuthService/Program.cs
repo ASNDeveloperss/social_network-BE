@@ -78,7 +78,7 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
 .AddEntityFrameworkStores<ApplicationDbContext>()
 .AddDefaultTokenProviders();
 
-// JWT Authentication - ОБНОВЛЕНО ДЛЯ RENDER
+// JWT Authentication - ИСПРАВЛЕННАЯ ВЕРСИЯ
 var jwtSecret = Environment.GetEnvironmentVariable("JWT_SECRET")
     ?? configuration["Jwt:Secret"]
     ?? throw new InvalidOperationException("JWT secret is not configured");
@@ -106,7 +106,18 @@ builder.Services.AddAuthentication(options =>
                        ?? configuration["Jwt:Audience"]
                        ?? "microservices-client",
         ValidateLifetime = true,
-        ClockSkew = TimeSpan.Zero
+        ClockSkew = TimeSpan.FromSeconds(30), // 30 секунд допуска для разных серверов
+        RequireExpirationTime = true,
+
+        // КРИТИЧЕСКИ ВАЖНЫЕ НАСТРОЙКИ ДЛЯ FIX IDX10503:
+        RequireSignedTokens = true,
+        TryAllIssuerSigningKeys = true, // Пробуем все ключи без проверки kid
+
+        // Отключаем кэширование провайдеров подписи
+        CryptoProviderFactory = new CryptoProviderFactory()
+        {
+            CacheSignatureProviders = false
+        }
     };
 
     // Для разработки - отключаем HTTPS требование
@@ -114,6 +125,9 @@ builder.Services.AddAuthentication(options =>
     {
         options.RequireHttpsMetadata = false;
     }
+
+    options.IncludeErrorDetails = true; // Для дебага показываем детали ошибок
+    options.SaveToken = true; // Сохраняем токен для доступа в контроллерах
 });
 
 // Регистрация сервисов
@@ -186,8 +200,8 @@ app.UseSwaggerUI(options =>
     options.DocumentTitle = "Auth Service API";
 });
 
-// ТЕСТОВЫЕ ЭНДПОИНТЫ (добавь перед MapControllers)
 
+// Проверка переменных окружения
 app.MapGet("/api/debug/env", () =>
 {
     var envVars = new Dictionary<string, string>
@@ -195,11 +209,15 @@ app.MapGet("/api/debug/env", () =>
         ["ASPNETCORE_ENVIRONMENT"] = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Not set",
         ["DATABASE_URL_SET"] = (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DATABASE_URL"))).ToString(),
         ["JWT_SECRET_SET"] = (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("JWT_SECRET"))).ToString(),
+        ["JWT_SECRET_LENGTH"] = (Environment.GetEnvironmentVariable("JWT_SECRET")?.Length ?? 0).ToString(),
+        ["JWT_ISSUER"] = Environment.GetEnvironmentVariable("JWT_ISSUER") ?? "Not set",
+        ["JWT_AUDIENCE"] = Environment.GetEnvironmentVariable("JWT_AUDIENCE") ?? "Not set",
         ["PORT"] = Environment.GetEnvironmentVariable("PORT") ?? "8080"
     };
     return Results.Json(envVars);
 });
 
+// Проверка подключения к БД
 app.MapGet("/api/debug/db", async (ApplicationDbContext db) =>
 {
     try
@@ -210,7 +228,8 @@ app.MapGet("/api/debug/db", async (ApplicationDbContext db) =>
             connected = canConnect,
             database = db.Database.GetDbConnection().Database,
             provider = db.Database.ProviderName,
-            connectionState = db.Database.GetDbConnection().State.ToString()
+            connectionState = db.Database.GetDbConnection().State.ToString(),
+            connectionStringExists = !string.IsNullOrEmpty(db.Database.GetConnectionString())
         });
     }
     catch (Exception ex)
@@ -225,7 +244,8 @@ app.MapGet("/health", () => Results.Ok(new
     status = "Healthy",
     service = "Auth Service",
     timestamp = DateTime.UtcNow,
-    environment = app.Environment.EnvironmentName
+    environment = app.Environment.EnvironmentName,
+    version = "1.0.0"
 }));
 
 // HTTPS редирект для продакшена
