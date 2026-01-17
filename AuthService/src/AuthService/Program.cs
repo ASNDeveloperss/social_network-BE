@@ -11,15 +11,22 @@ using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ЛОГИРОВАНИЕ СТАРТА
+Console.WriteLine("=== APPLICATION STARTING ===");
+Console.WriteLine($"Environment: {builder.Environment.EnvironmentName}");
+
 // Конфигурация
 var configuration = builder.Configuration;
 
 // БАЗА ДАННЫХ - ОБНОВЛЕННЫЙ КОД ДЛЯ RENDER
 var connectionString = Environment.GetEnvironmentVariable("DATABASE_URL");
+Console.WriteLine($"DATABASE_URL exists: {!string.IsNullOrEmpty(connectionString)}");
+
 if (string.IsNullOrEmpty(connectionString))
 {
     // Для локальной разработки
     connectionString = configuration.GetConnectionString("DefaultConnection");
+    Console.WriteLine("⚠️ Using appsettings.json connection string");
 }
 else if (connectionString.StartsWith("postgresql://"))
 {
@@ -33,6 +40,17 @@ else if (connectionString.StartsWith("postgresql://"))
                       $"Username={userInfo[0]};" +
                       $"Password={userInfo[1]};" +
                       $"SSL Mode=Require;Trust Server Certificate=true";
+    Console.WriteLine($"✅ Converted Render URL for: {uri.Host}");
+}
+
+// Проверяем что connectionString не пустой
+if (string.IsNullOrEmpty(connectionString))
+{
+    Console.WriteLine("❌ CRITICAL: No database connection string found!");
+}
+else
+{
+    Console.WriteLine($"✅ Connection string length: {connectionString.Length}");
 }
 
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
@@ -42,6 +60,7 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
             maxRetryCount: 5,
             maxRetryDelay: TimeSpan.FromSeconds(30),
             errorCodesToAdd: null);
+        npgsqlOptions.CommandTimeout(60); // 60 секунд timeout
     }));
 
 // Identity
@@ -65,6 +84,7 @@ var jwtSecret = Environment.GetEnvironmentVariable("JWT_SECRET")
     ?? throw new InvalidOperationException("JWT secret is not configured");
 
 var key = Encoding.UTF8.GetBytes(jwtSecret);
+Console.WriteLine($"✅ JWT Secret configured: {jwtSecret.Length > 0}");
 
 builder.Services.AddAuthentication(options =>
 {
@@ -103,97 +123,114 @@ builder.Services.AddScoped<IAuthService, AuthService.Services.AuthService>();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
-// Swagger - только для разработки
-if (builder.Environment.IsDevelopment())
+// Swagger - ВКЛЮЧАЕМ ДЛЯ ВСЕХ СРЕД
+builder.Services.AddSwaggerGen(options =>
 {
-    builder.Services.AddSwaggerGen(options =>
+    options.SwaggerDoc("v1", new OpenApiInfo
     {
-        options.SwaggerDoc("v1", new OpenApiInfo
-        {
-            Title = "Auth Service",
-            Version = "v1"
-        });
-
-        options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
-        {
-            Type = SecuritySchemeType.Http,
-            Scheme = "bearer",
-            BearerFormat = "JWT",
-            Description = "Enter JWT Bearer token"
-        });
-
-        options.AddSecurityRequirement(new OpenApiSecurityRequirement
-        {
-            {
-                new OpenApiSecurityScheme
-                {
-                    Reference = new OpenApiReference
-                    {
-                        Type = ReferenceType.SecurityScheme,
-                        Id = "Bearer"
-                    }
-                },
-                Array.Empty<string>()
-            }
-        });
+        Title = "Auth Service API",
+        Version = "v1",
+        Description = "Authentication Service for Microservices"
     });
-}
 
-// CORS
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        Description = "Enter JWT Bearer token"
+    });
+
+    options.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
+});
+
+// CORS - РАЗРЕШАЕМ ВСЕ БЕЗ ОГРАНИЧЕНИЙ
 builder.Services.AddCors(options =>
 {
-    options.AddDefaultPolicy(policy =>
+    options.AddPolicy("AllowAll", policy =>
     {
-        var allowedOrigins = Environment.GetEnvironmentVariable("ALLOWED_ORIGINS")
-                           ?? configuration["AllowedOrigins"]
-                           ?? "*";
-
-        if (allowedOrigins == "*")
-        {
-            policy.SetIsOriginAllowed(_ => true);
-        }
-        else
-        {
-            policy.WithOrigins(allowedOrigins.Split(';'));
-        }
-
-        policy.AllowAnyHeader()
+        policy.SetIsOriginAllowed(_ => true)  // ← РАЗРЕШАЕТ ЛЮБОЙ ORIGIN!
+              .AllowAnyHeader()
               .AllowAnyMethod()
-              .AllowCredentials();
+              .AllowCredentials()
+              .SetPreflightMaxAge(TimeSpan.FromHours(1));
     });
 });
 
 var app = builder.Build();
 
-// Порядок Middleware ВАЖЕН!
-app.UseCors();
+Console.WriteLine("🔄 Building middleware pipeline...");
 
-// Health check endpoint
-app.MapGet("/health", () => Results.Ok(new { status = "Healthy", timestamp = DateTime.UtcNow }));
+// CORS - ВКЛЮЧАЕМ РАЗРЕШЕНИЕ ВСЕХ ORIGINS
+app.UseCors("AllowAll");
 
-if (app.Environment.IsDevelopment())
+// Swagger ВСЕГДА ВКЛЮЧАЕМ
+app.UseSwagger();
+app.UseSwaggerUI(options =>
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
-    app.MapGet("/debug/routes", () =>
+    options.SwaggerEndpoint("/swagger/v1/swagger.json", "Auth Service API v1");
+    options.RoutePrefix = "api-docs"; // Доступно на /api-docs
+    options.DocumentTitle = "Auth Service API";
+});
+
+// ТЕСТОВЫЕ ЭНДПОИНТЫ (добавь перед MapControllers)
+
+app.MapGet("/api/debug/env", () =>
+{
+    var envVars = new Dictionary<string, string>
     {
-        var routes = app.Services.GetService<IEnumerable<EndpointDataSource>>()
-            ?.SelectMany(es => es.Endpoints)
-            .OfType<RouteEndpoint>()
-            .Select(e => new
-            {
-                Method = e.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods?.FirstOrDefault(),
-                Pattern = e.RoutePattern.RawText,
-                DisplayName = e.DisplayName
-            })
-            .ToList();
+        ["ASPNETCORE_ENVIRONMENT"] = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Not set",
+        ["DATABASE_URL_SET"] = (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DATABASE_URL"))).ToString(),
+        ["JWT_SECRET_SET"] = (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("JWT_SECRET"))).ToString(),
+        ["PORT"] = Environment.GetEnvironmentVariable("PORT") ?? "8080"
+    };
+    return Results.Json(envVars);
+});
 
-        return Results.Json(routes);
-    }).WithTags("Debug");
-}
-else
+app.MapGet("/api/debug/db", async (ApplicationDbContext db) =>
 {
-    // В продакшене всегда HTTPS
+    try
+    {
+        var canConnect = await db.Database.CanConnectAsync();
+        return Results.Ok(new
+        {
+            connected = canConnect,
+            database = db.Database.GetDbConnection().Database,
+            provider = db.Database.ProviderName,
+            connectionState = db.Database.GetDbConnection().State.ToString()
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem($"Database error: {ex.Message}");
+    }
+});
+
+// Health endpoint
+app.MapGet("/health", () => Results.Ok(new
+{
+    status = "Healthy",
+    service = "Auth Service",
+    timestamp = DateTime.UtcNow,
+    environment = app.Environment.EnvironmentName
+}));
+
+// HTTPS редирект для продакшена
+if (!app.Environment.IsDevelopment())
+{
     app.UseHttpsRedirection();
 }
 
@@ -202,13 +239,30 @@ app.UseAuthorization();
 
 app.MapControllers();
 
-// Применение миграций
-using (var scope = app.Services.CreateScope())
+// Применение миграций С ОБРАБОТКОЙ ОШИБОК
+try
 {
+    Console.WriteLine("🔄 Applying database migrations...");
+    using var scope = app.Services.CreateScope();
     var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
     await dbContext.Database.MigrateAsync();
+    Console.WriteLine("✅ Database migrations applied successfully");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"❌ Database migration failed: {ex.Message}");
+    if (ex.InnerException != null)
+    {
+        Console.WriteLine($"❌ Inner exception: {ex.InnerException.Message}");
+    }
+    // НЕ ПАДАЕМ, продолжаем работу
 }
 
-// Получаем порт из переменной окружения (Render использует PORT)
+// Запуск
 var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+Console.WriteLine($"🚀 Starting Auth Service on port: {port}");
+Console.WriteLine($"🔗 Health check: http://localhost:{port}/health");
+Console.WriteLine($"📚 API Docs: http://localhost:{port}/api-docs");
+Console.WriteLine($"🌐 CORS: ALLOWED ALL ORIGINS (Any IP/Domain)");
+
 app.Run($"http://*:{port}");
